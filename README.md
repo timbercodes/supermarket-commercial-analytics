@@ -8,6 +8,8 @@ An end-to-end commercial analytics framework combining BigQuery SQL engineering,
 
 Retail analytics often suffers from biased telemetry caused by unfiltered staff presence, GPS noise, and unidentified foot traffic. This project establishes an enterprise **Single Source of Truth (SSOT)** for supermarket operational metrics by parsing raw geolocation logs, transaction registers, national demographic statistics, and competitor locations.
 
+![Executive Overview Dashboard](assets/executive_overview.png)
+
 ### Key Performance Impact & Findings
 
 * **Spatial Expansion Modeling:** Identified **Modi'in Illit** as the top retail expansion market with an **Opportunity Score of 91.8k** (91,000 residents with zero major discount chain competitors).
@@ -17,10 +19,10 @@ Retail analytics often suffers from biased telemetry caused by unfiltered staff 
 
 | Analytics Dimension | Core Metric / Formula | Key Finding / Business Value | Operational Recommendation |
 | :--- | :--- | :--- | :--- |
-| **Dwell Time Value** | $\text{Spend} = 25.65 + 7.62 \times \text{DwellMinutes}$ | Strong positive correlation ($R^2 = 0.76$); 60 min stay averages ~607 NIS vs 15 min at ~75 NIS | Enhance in-store experience (climate control, layout pacing, mini-cafe) |
-| **Weekly Traffic Trend** | $\text{Traffic} = 1599.04 - 12.89 \times \text{WeekNum}$ | Sustained loss of ~13 unique shoppers/week ($p = 0.018$) | Launch geo-targeted loyalty campaigns and win-back offers |
-| **Expansion Opportunity** | $\text{Score} = \frac{\text{Population}}{\max(\text{Competitors}, 1)}$ | Modi'in Illit ranks #1 (91.8k Score); Tel Aviv & Jerusalem highly saturated | Prioritize flagship branch in Modi'in Illit |
-| **Digital Loyalty Mix** | $\frac{\text{App Repeat Users}}{\text{Total Transactions}}$ | 87% of revenue driven by Repeat App users; 3,596 Walk-in shoppers untracked | Launch aggressive app onboarding for Walk-in shoppers |
+| **Dwell Time Value** | `Spend = 25.65 + 7.62 * DwellMinutes` | Strong positive correlation ($R^2 = 0.76$); 60 min stay averages ~607 NIS vs 15 min at ~75 NIS | Enhance in-store experience (climate control, layout pacing, mini-cafe) |
+| **Weekly Traffic Trend** | `Traffic = 1599.04 - 12.89 * WeekNum` | Sustained loss of ~13 unique shoppers/week ($p = 0.018$) | Launch geo-targeted loyalty campaigns and win-back offers |
+| **Expansion Opportunity** | `Score = Population / max(Competitors, 1)` | Modi'in Illit ranks #1 (91.8k Score); Tel Aviv & Jerusalem highly saturated | Prioritize flagship branch in Modi'in Illit |
+| **Digital Loyalty Mix** | `App Repeat Users / Total Transactions` | 87% of revenue driven by Repeat App users; 3,596 Walk-in shoppers untracked | Launch aggressive app onboarding for Walk-in shoppers |
 
 ---
 
@@ -71,7 +73,7 @@ Retail analytics often suffers from biased telemetry caused by unfiltered staff 
 
 Raw geolocation logs include non-customer movement (cashiers, store managers, butchers, delivery drivers, security guards). Inclusion of staff devices severely inflates customer dwell-time metrics (e.g., 9-hour employee shifts registered as shopping visits). 
 
-The pipeline applies a strict spatial filter ($\text{accuracy\_m} \le 30$) and classifies roles dynamically using spatial zones (`HEAD_OFFICE`, `CASH_REGISTERS`, `BUTCHERY`) and temporal arrival windows (5:00–6:00 AM delivery windows).
+The pipeline applies a strict spatial filter (`accuracy_m <= 30`) and classifies roles dynamically using spatial zones (`HEAD_OFFICE`, `CASH_REGISTERS`, `BUTCHERY`) and temporal arrival windows (5:00–6:00 AM delivery windows).
 
 ```sql
 WITH clean_geo AS (
@@ -181,9 +183,13 @@ Cross-referencing frequency and monetary metrics revealed anchor VIP customers:
 
 ### Model 1: Dwell Time vs. Average Spend (OLS Regression)
 
-To test the hypothesis that increasing store duration directly expands basket size, an Ordinary Least Squares (OLS) model was fitted on clean customer transactions ($0 < \text{dwell\_minutes} \le 180$).
+To test the hypothesis that increasing store duration directly expands basket size, an Ordinary Least Squares (OLS) model was fitted on clean customer transactions (`0 < dwell_minutes <= 180`).
 
-$$\text{Basket Total (NIS)} = \beta_0 + \beta_1 \cdot \text{DwellMinutes} + \varepsilon$$
+```
+Basket Total (NIS) = β₀ + β₁ × DwellMinutes + ε
+```
+
+![Regression Model Chart](assets/regression_model.png)
 
 ```
 Linear Regression Summary: Spend vs. Dwell Time
@@ -207,7 +213,9 @@ Sample Size (N)   : Clean Transaction Logs
 
 ### Model 2: Weekly Traffic Trend & Churn Analysis
 
-$$\text{Weekly Unique Visitors} = \alpha_0 + \alpha_1 \cdot \text{WeekNumber} + \varepsilon$$
+```
+Weekly Unique Visitors = α₀ + α₁ × WeekNumber + ε
+```
 
 ```
 Linear Regression Summary: Weekly Traffic Trend
@@ -230,6 +238,8 @@ Analysis of hour-by-day visitor counts revealed severe operational concentration
 * **Peak Demand ("The Thursday Effect"):** Thursday evenings (17:00–20:00) and Friday mornings (8:00–12:00) represent peak foot traffic. Average basket sizes jump **+55%** from 380 NIS (Sun–Wed) to 590 NIS (Thu–Fri).
 * **Daily Peak Hour:** 14:00 records peak revenue across all days (~3.1M NIS cumulative across dataset, 6k transactions).
 * **Operations Gap at 16:00:** Data revealed a sharp, unnatural dip in transactions at 16:00 across all weekdays, indicating shift handoff friction or register closures.
+
+![Traffic Heatmap](assets/traffic_heatmap.png)
 
 ```
 Operating Hours Heatmap Snippet (Hourly Visitor Counts)
@@ -260,7 +270,9 @@ To guide network expansion, sales data was integrated with national demographic 
 
 ### Opportunity Score Formula
 
-$$\text{Opportunity Score} = \frac{\text{City Total Population}}{\max(\text{Existing Competitor Supermarkets}, 1)}$$
+```
+Opportunity Score = City Total Population / max(Existing Competitor Supermarkets, 1)
+```
 
 ```sql
 SELECT 
@@ -289,84 +301,35 @@ LIMIT 15;
 | -- | *Tel Aviv* | 460,000+ | 243 | Low | Highly Saturated (Severe cannibalization risk) |
 | -- | *Jerusalem* | 950,000+ | 198 | Low | Highly Saturated |
 
-**Strategic Fit:** Modi'in Illit perfectly aligns with the chain's operational strengths. The demographic profile features large households preparing extensively for the Sabbath, matching the store's high-volume Thursday/Friday sales pattern.
-
 ---
 
 ## BI Dashboard Architecture (Looker Studio)
 
 The master BI dataset compiles cleaned sales, spatial metadata, and customer tiers into a single flat table for high-performance Looker Studio reporting:
 
-```sql
-WITH user_roles AS (
-  SELECT DISTINCT device_id, role
-  FROM `bqproj-435911.Final_Project_2025.geolocation`
-)
-SELECT 
-  s.timestamp,
-  EXTRACT(DATE FROM s.timestamp) AS date,
-  EXTRACT(HOUR FROM s.timestamp) AS hour,
-  CASE EXTRACT(DAYOFWEEK FROM s.timestamp)
-    WHEN 1 THEN '1. Sunday'
-    WHEN 2 THEN '2. Monday'
-    WHEN 3 THEN '3. Tuesday'
-    WHEN 4 THEN '4. Wednesday'
-    WHEN 5 THEN '5. Thursday'
-    WHEN 6 THEN '6. Friday'
-    WHEN 7 THEN '7. Saturday'
-  END AS day_name,
-  s.total AS revenue,
-  CASE 
-    WHEN u.role = 'repeat_customer' THEN 'Repeat (App)'
-    WHEN u.role = 'one_time_customer' THEN 'One-Time (App)'
-    ELSE 'Walk-in (No App)'
-  END AS customer_type,
-  s.dwell_minutes
-FROM `bqproj-435911.Final_Project_2025.log_sales` s
-LEFT JOIN user_roles u ON s.customer_id = u.device_id
-WHERE (s.dwell_minutes <= 180 OR s.dwell_minutes IS NULL);
-```
+### 1. Executive Overview
+![Executive Overview Dashboard](assets/executive_overview.png)
 
-### Dashboard View Structure
+### 2. Operations & Efficiency
+![Operations & Efficiency Dashboard](assets/operations_efficiency.png)
 
-```
-+--------------------------------------------------------------------+
-| LOOKER STUDIO ENTERPRISE DASHBOARD                                 |
-+--------------------------------------------------------------------+
-| [PAGE 1: EXECUTIVE OVERVIEW (C-Suite)]                             |
-|  - Macro KPIs: Revenue (16.6M NIS), Visits (34.6K), Avg Basket     |
-|  - Revenue Trend Line (Daily Seasonality & Holiday Drops)          |
-|  - Digital Loyalty Mix Pie Chart (87% Repeat App / 10.4% Walk-in)   |
-+--------------------------------------------------------------------+
-| [PAGE 2: OPERATIONS & EFFICIENCY (Store Management)]              |
-|  - Staffing Heatmap: Traffic Volume by Day & Hour                  |
-|  - Customer Dwell Time Distribution (Polynomial Trend Curve)       |
-|  - Average Basket Size by Day of Week (Thursday Surge +55%)        |
-+--------------------------------------------------------------------+
-| [PAGE 3: STRATEGY & EXPANSION (VP Business Development)]           |
-|  - Dwell Time vs. Spend Scatter Plot with Trendline                |
-|  - Expansion Target Score Rankings (Modi'in Illit #1)              |
-+--------------------------------------------------------------------+
-```
+### 3. Strategy & Expansion
+![Strategy & Expansion Dashboard](assets/strategy_expansion.png)
 
 ---
 
 ## Repository Structure
 
 ```
+├── assets/
+│   ├── executive_overview.png
+│   ├── operations_efficiency.png
+│   ├── strategy_expansion.png
+│   ├── regression_model.png
+│   └── traffic_heatmap.png
 ├── sql/
-│   └── supermarket_analytics_master.sql   # Full 5-part BigQuery SQL script
-├── data_dictionary/
-│   └── schema_overview.md                 # Entity-relationship & field docs
-├── visual_assets/
-│   ├── executive_overview_dashboard.png   # Looker Studio Page 1 screenshot
-│   ├── operations_heatmap_dashboard.png   # Looker Studio Page 2 screenshot
-│   ├── strategy_expansion_dashboard.png   # Looker Studio Page 3 screenshot
-│   └── spend_vs_dwell_regression.png      # OLS Regression Scatter Plot
-├── docs/
-│   ├── presentation_deck.pdf              # Final capstone slides
-│   └── executive_summary_report.pdf       # Comprehensive project report
-└── README.md                              # Main portfolio documentation
+│   └── supermarket_analytics.sql
+└── README.md
 ```
 
 ---
