@@ -1,0 +1,192 @@
+/* ================================================================ 
+   FINAL PROJECT: SUPERMARKET DATA ANALYSIS 
+   CLEAN MASTER SCRIPT 
+================================================================ 
+*/ 
+ 
+/* ---------------------------------------------------------------- 
+   PART 1: DATA CLEANING & EMPLOYEE IDENTIFICATION 
+   Objective: Filter bad GPS data and identify staff based on behavior. ---------------------------------------------------------------- */ 
+ 
+WITH clean_geo AS ( 
+  -- Filter out GPS noise (>30m accuracy) 
+  SELECT * FROM `bqproj-435911.Final_Project_2025.geolocation` 
+  WHERE accuracy_m <= 30 
+), 
+ 
+device_stats AS ( 
+  SELECT  
+    device_id, 
+    -- Count pings in specific zones 
+    COUNTIF(area = 'HEAD_OFFICE') as office_pings, 
+    COUNTIF(area = 'CASH_REGISTERS') as register_pings, 
+    COUNTIF(area = 'BUTCHERY') as butchery_pings, 
+    COUNTIF(area = 'SUPERMARKET') as shopping_pings, 
+    -- Check for Delivery Guys (Early Morning Mon/Thu) 
+    COUNTIF( 
+      EXTRACT(HOUR FROM timestamp) BETWEEN 5 AND 8  
+      AND EXTRACT(DAYOFWEEK FROM timestamp) IN (2, 5)  
+    ) as delivery_time_pings, 
+    COUNT(*) as total_pings 
+  FROM clean_geo 
+  GROUP BY device_id 
+) 
+ -- OUTPUT: Final Classified Roles 
+SELECT  
+  device_id, 
+  CASE  
+    WHEN office_pings > register_pings AND office_pings > 100 THEN 'manager' 
+    WHEN register_pings > shopping_pings AND register_pings > 100 THEN 'cashier' 
+    WHEN butchery_pings > 10 THEN 'butcher' 
+    WHEN delivery_time_pings > 0 AND total_pings < 50 THEN 'delivery_guy' 
+    WHEN total_pings > 200 THEN 'general_staff' -- Catch-all for long shifts 
+    ELSE 'customer'  
+  END as calculated_role 
+FROM device_stats; 
+ 
+/* ---------------------------------------------------------------- 
+   PART 2: CUSTOMER SEGMENTATION (Unique Users) 
+   Objective: Count distinct PEOPLE (Repeat vs One-Time). 
+   Note: This counts Devices, not Transactions. ---------------------------------------------------------------- */ 
+ 
+WITH valid_roles AS ( 
+  SELECT DISTINCT device_id, role 
+  FROM `bqproj-435911.Final_Project_2025.geolocation` 
+  WHERE role IN ('repeat_customer', 'one_time_customer', 'not_paying') 
+), 
+ 
+sales_data AS ( 
+  SELECT  
+    customer_id,  
+    COUNT(DISTINCT sale_id) as total_transactions, 
+    SUM(total) as total_spend 
+  FROM `bqproj-435911.Final_Project_2025.log_sales` 
+  GROUP BY 1 
+), 
+ 
+visit_data AS ( 
+  SELECT  
+    device_id,  
+    COUNT(DISTINCT DATE(timestamp)) as visit_days 
+  FROM `bqproj-435911.Final_Project_2025.geolocation` 
+  WHERE accuracy_m <= 30 
+  GROUP BY 1 
+) 
+ -- OUTPUT: Top 5 Customers (Frequency & Spend) 
+SELECT * FROM ( 
+  SELECT  
+    'Most Frequent (Visits)' as category, 
+    v.device_id, 
+    v.visit_days as value, 
+    r.role 
+  FROM visit_data v 
+  JOIN valid_roles r ON v.device_id = r.device_id 
+  ORDER BY value DESC LIMIT 5 
+) 
+ 
+UNION ALL 
+ 
+SELECT * FROM ( 
+  SELECT  
+    'Top Spender (Shekels)', 
+    s.customer_id, 
+    ROUND(s.total_spend, 2) as value, 
+    r.role 
+  FROM sales_data s 
+  JOIN valid_roles r ON s.customer_id = r.device_id 
+  ORDER BY value DESC LIMIT 5 
+); 
+ 
+/* ---------------------------------------------------------------- 
+   PART 3: MARKET OPPORTUNITY (Strategic Expansion) 
+   Objective: Find cities with High Population and Low Competition. ---------------------------------------------------------------- */ 
+ 
+SELECT  
+  TRIM(t1.city_name) AS City, 
+  t1.total_population AS Population, 
+  COUNT(t2.id) AS Competitor_Count, 
+  -- Calculate Opportunity Score (People per Store) 
+  CAST(t1.total_population / GREATEST(COUNT(t2.id), 1) AS INT64) AS Opportunity_Score 
+FROM `bqproj-435911.Final_Project_2025.Lamas_israel_2025` AS t1 
+LEFT JOIN `bqproj-435911.Final_Project_2025.supermarkets_il` AS t2  
+  ON TRIM(t1.city_name) = TRIM(t2.city) 
+GROUP BY 1, 2 
+HAVING t1.total_population > 15000  
+ORDER BY Opportunity_Score DESC 
+LIMIT 15; 
+ 
+/* ---------------------------------------------------------------- 
+   PART 4: REGRESSION DATA GENERATION 
+   Objective: Prepare clean data for Python/Looker Trend Analysis. 
+   Note: Filters out outliers (>3 hours dwell time). ---------------------------------------------------------------- */ 
+ 
+WITH valid_customers AS ( 
+  SELECT DISTINCT device_id 
+  FROM `bqproj-435911.Final_Project_2025.geolocation` 
+  WHERE role IN ('repeat_customer', 'one_time_customer') 
+), 
+ 
+clean_sales AS ( 
+  SELECT  
+    s.timestamp, 
+    s.dwell_minutes, 
+    s.total 
+  FROM `bqproj-435911.Final_Project_2025.log_sales` s 
+  JOIN valid_customers v ON s.customer_id = v.device_id 
+  WHERE s.dwell_minutes > 0  
+    AND s.dwell_minutes <= 180 -- Remove bugs 
+) 
+ -- OUTPUT: Combined dataset for Regression 1 (Traffic) and 2 (Spend vs Time) 
+SELECT  
+  'Reg1_WeeklyTraffic' AS dataset_name, 
+  CAST(EXTRACT(WEEK FROM timestamp) AS FLOAT64) AS x_variable,  
+  COUNT(*) AS y_variable  
+FROM clean_sales 
+GROUP BY 1, 2 
+ 
+UNION ALL 
+ 
+SELECT  
+  'Reg2_SpendVsDwell' AS dataset_name, 
+  dwell_minutes AS x_variable, 
+  total AS y_variable 
+FROM clean_sales; 
+ 
+/* ---------------------------------------------------------------- 
+   PART 5: DASHBOARD MASTER DATASET (The Big One) 
+   Objective: Create the source for Looker Studio. 
+   Fixes: Includes Walk-ins (NULL Dwell Time) + Identified App Users. ---------------------------------------------------------------- */ 
+ 
+WITH user_roles AS ( 
+  -- Helper to identify App Users 
+  SELECT DISTINCT device_id, role 
+  FROM `bqproj-435911.Final_Project_2025.geolocation` 
+) 
+ 
+SELECT  
+  s.timestamp, 
+  EXTRACT(DATE FROM s.timestamp) AS date, 
+  EXTRACT(HOUR FROM s.timestamp) AS hour, 
+  CASE EXTRACT(DAYOFWEEK FROM s.timestamp) 
+    WHEN 1 THEN '1. Sunday' 
+    WHEN 2 THEN '2. Monday' 
+    WHEN 3 THEN '3. Tuesday' 
+    WHEN 4 THEN '4. Wednesday' 
+    WHEN 5 THEN '5. Thursday' 
+    WHEN 6 THEN '6. Friday' 
+    WHEN 7 THEN '7. Saturday' 
+  END AS day_name, 
+  s.total AS revenue, 
+   
+  -- Customer Logic: If ID exists in Geo -> App User. If ID is NULL/No Match -> Walk
+in. 
+  CASE  
+    WHEN u.role = 'repeat_customer' THEN 'Repeat (App)' 
+    WHEN u.role = 'one_time_customer' THEN 'One-Time (App)' 
+    ELSE 'Walk-in (No App)'  
+  END AS customer_type, 
+   
+  s.dwell_minutes 
+FROM `bqproj-435911.Final_Project_2025.log_sales` s 
+LEFT JOIN user_roles u ON s.customer_id = u.device_id -- CRITICAL FIX: Keep Walk-ins (NULL) but filter Bugs (>180) for App users 
+WHERE (s.dwell_minutes <= 180 OR s.dwell_minutes IS NULL);
